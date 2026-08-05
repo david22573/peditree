@@ -1,0 +1,5 @@
+DROP TABLE IF EXISTS audit_events;
+DROP TABLE IF EXISTS saved_layouts;
+DROP TABLE IF EXISTS parentage;
+DROP TABLE IF EXISTS dogs;
+DROP TABLE IF EXISTS workspaces;
