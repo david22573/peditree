@@ -1,8 +1,10 @@
-import React, { useEffect, useRef, useImperativeHandle, forwardRef } from 'react';
+import React, { useEffect, useRef, useImperativeHandle, forwardRef, useState, useMemo } from 'react';
 import { Network } from 'vis-network';
 import { DataSet } from 'vis-data';
 import { Dog, Parentage } from '../types';
 import { buildPedigreeGraph } from '../graph/builder';
+import { calculateConnectedComponents, detectCycle } from '../graph/algorithms';
+import { ZoomIn, ZoomOut, Maximize2, ArrowDownUp, ArrowLeftRight, AlertTriangle } from 'lucide-react';
 
 export interface PedigreeGraphRef {
   fit: () => void;
@@ -19,13 +21,41 @@ export const PedigreeGraph = forwardRef<PedigreeGraphRef, PedigreeGraphProps>(
   ({ dogs, relationships, selectedDogId, onSelectDog }, ref) => {
     const containerRef = useRef<HTMLDivElement>(null);
     const networkRef = useRef<Network | null>(null);
+    const [direction, setDirection] = useState<'UD' | 'LR'>('UD');
+
+    // Connected components for status display (matching index.html)
+    const familyCount = useMemo(() => {
+      return calculateConnectedComponents(dogs, relationships).size;
+    }, [dogs, relationships]);
+
+    const hasCycle = useMemo(() => {
+      return detectCycle(dogs, relationships);
+    }, [dogs, relationships]);
+
+    const handleFit = () => {
+      if (networkRef.current) {
+        networkRef.current.fit({
+          animation: { duration: 400, easingFunction: 'easeInOutQuad' },
+        });
+      }
+    };
+
+    const handleZoomIn = () => {
+      if (networkRef.current) {
+        const scale = networkRef.current.getScale();
+        networkRef.current.moveTo({ scale: scale * 1.25, animation: { duration: 250, easingFunction: 'easeInOutQuad' } });
+      }
+    };
+
+    const handleZoomOut = () => {
+      if (networkRef.current) {
+        const scale = networkRef.current.getScale();
+        networkRef.current.moveTo({ scale: scale * 0.8, animation: { duration: 250, easingFunction: 'easeInOutQuad' } });
+      }
+    };
 
     useImperativeHandle(ref, () => ({
-      fit: () => {
-        if (networkRef.current) {
-          networkRef.current.fit({ animation: { duration: 400, easingFunction: 'easeInOutQuad' } });
-        }
-      },
+      fit: handleFit,
     }));
 
     useEffect(() => {
@@ -33,48 +63,76 @@ export const PedigreeGraph = forwardRef<PedigreeGraphRef, PedigreeGraphProps>(
 
       const { nodes, edges } = buildPedigreeGraph(dogs, relationships);
 
-      const nodesDataSet = new DataSet(nodes as any);
-      const edgesDataSet = new DataSet(edges as any);
-
       const data: any = {
         nodes: nodes,
         edges: edges,
       };
 
       const options: any = {
+        autoResize: true,
         layout: {
           hierarchical: {
             enabled: true,
-            direction: 'UD', // Up-Down top-to-bottom
+            direction,
             sortMethod: 'directed',
-            levelSeparation: 100,
+            shakeTowards: 'roots',
             nodeSpacing: 150,
-            treeSpacing: 200,
+            levelSeparation: 100,
+            treeSpacing: 220,
             blockShifting: true,
             edgeMinimization: true,
             parentCentralization: true,
           },
         },
-        physics: {
-          enabled: false,
-        },
+        physics: false,
         interaction: {
           hover: true,
+          navigationButtons: true,
+          keyboard: {
+            enabled: true,
+            bindToWindow: false,
+          },
           tooltipDelay: 150,
           selectable: true,
           selectConnectedEdges: false,
         },
+        nodes: {
+          widthConstraint: {
+            minimum: 110,
+            maximum: 180,
+          },
+          chosen: true,
+        },
         edges: {
+          width: 1.5,
+          color: {
+            color: '#94a3b8',
+            highlight: '#f8fafc',
+            hover: '#cbd5e1',
+            inherit: false,
+          },
+          selectionWidth: 2,
+          hoverWidth: 2,
           smooth: {
+            enabled: true,
             type: 'cubicBezier',
-            forceDirection: 'vertical',
-            roundness: 0.4,
+            forceDirection: direction === 'UD' ? 'vertical' : 'horizontal',
+            roundness: 0.35,
           },
         },
       };
 
       const network = new Network(containerRef.current, data, options);
       networkRef.current = network;
+
+      network.once('afterDrawing', () => {
+        network.fit({
+          animation: {
+            duration: 400,
+            easingFunction: 'easeInOutQuad',
+          },
+        });
+      });
 
       network.on('selectNode', params => {
         const nodeId = params.nodes[0];
@@ -93,7 +151,7 @@ export const PedigreeGraph = forwardRef<PedigreeGraphRef, PedigreeGraphProps>(
         network.destroy();
         networkRef.current = null;
       };
-    }, [dogs, relationships]);
+    }, [dogs, relationships, direction]);
 
     // Update selection highlight
     useEffect(() => {
@@ -106,9 +164,56 @@ export const PedigreeGraph = forwardRef<PedigreeGraphRef, PedigreeGraphProps>(
       }
     }, [selectedDogId]);
 
+    const activeDogsCount = dogs.filter(d => !d.deleted_at).length;
+
     return (
       <div className="canvas-container">
-        <div ref={containerRef} className="vis-network-container" />
+        {/* Status bar matching index.html */}
+        <div className="graph-status-bar" role="status" aria-live="polite">
+          <div className="status-text">
+            <span>
+              <strong>{activeDogsCount}</strong> dog{activeDogsCount === 1 ? '' : 's'} across{' '}
+              <strong>{familyCount}</strong> separate family group{familyCount === 1 ? '' : 's'}.
+            </span>
+            {hasCycle && (
+              <span className="cycle-alert-badge" title="Ancestry cycle detected in dataset">
+                <AlertTriangle size={14} /> Cycle Detected
+              </span>
+            )}
+          </div>
+          <div className="canvas-toolbar">
+            <button
+              className="canvas-btn"
+              onClick={handleZoomIn}
+              title="Zoom In"
+            >
+              <ZoomIn size={16} />
+            </button>
+            <button
+              className="canvas-btn"
+              onClick={handleZoomOut}
+              title="Zoom Out"
+            >
+              <ZoomOut size={16} />
+            </button>
+            <button
+              className="canvas-btn"
+              onClick={handleFit}
+              title="Fit View"
+            >
+              <Maximize2 size={16} />
+            </button>
+            <button
+              className="canvas-btn"
+              onClick={() => setDirection(d => (d === 'UD' ? 'LR' : 'UD'))}
+              title={direction === 'UD' ? 'Switch to Horizontal Layout (LR)' : 'Switch to Vertical Layout (UD)'}
+            >
+              {direction === 'UD' ? <ArrowLeftRight size={16} /> : <ArrowDownUp size={16} />}
+            </button>
+          </div>
+        </div>
+
+        <div ref={containerRef} className="vis-network-container" id="network" aria-label="Interactive dog family tree" />
       </div>
     );
   }

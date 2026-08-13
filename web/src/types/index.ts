@@ -69,17 +69,23 @@ export interface VisNode {
   id: string;
   label: string;
   shape?: string;
+  size?: number;
+  margin?: { top: number; right: number; bottom: number; left: number };
   color?: {
     background: string;
     border: string;
     highlight?: { background: string; border: string };
+    hover?: { background: string; border: string };
   };
-  font?: { color: string; size?: number; multi?: boolean };
+  font?: { color: string; face?: string; size?: number; multi?: boolean };
   level?: number;
   title?: string;
   isUnionNode?: boolean;
   dogId?: string;
   borderWidth?: number;
+  borderWidthSelected?: number;
+  shadow?: { enabled: boolean; color?: string; size?: number; x?: number; y?: number };
+  chosen?: boolean;
   shapeProperties?: { borderDashes?: boolean | number[] };
 }
 
@@ -87,10 +93,13 @@ export interface VisEdge {
   id: string;
   from: string;
   to: string;
+  relation?: string;
   dashes?: boolean | number[];
-  color?: { color: string; highlight?: string };
-  arrows?: string | { to?: { enabled?: boolean } };
+  color?: { color: string; highlight?: string; hover?: string; inherit?: boolean };
+  arrows?: string | { to?: { enabled?: boolean; scaleFactor?: number } };
   label?: string;
   title?: string;
   width?: number;
+  selectionWidth?: number;
+  hoverWidth?: number;
 }

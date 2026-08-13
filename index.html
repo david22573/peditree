@@ -1,0 +1,649 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta
+    name="viewport"
+    content="width=device-width, initial-scale=1"
+  />
+
+  <title>Dog Family Trees</title>
+
+  <!-- Pin this to the exact version tested by your application. -->
+  <script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+
+  <style>
+    *,
+    *::before,
+    *::after {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      width: 100%;
+      height: 100%;
+    }
+
+    body {
+      margin: 0;
+      padding: 20px;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+        sans-serif;
+      background: #0f172a;
+      color: #f8fafc;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 1.5rem;
+    }
+
+    #status {
+      min-height: 1.25rem;
+      color: #cbd5e1;
+      font-size: 0.875rem;
+    }
+
+    #status.error {
+      color: #fca5a5;
+    }
+
+    #network {
+      flex: 1;
+      min-height: 400px;
+      width: 100%;
+      border: 1px solid #334155;
+      border-radius: 10px;
+      background: #1e293b;
+      overflow: hidden;
+    }
+  </style>
+</head>
+
+<body>
+  <h1>Dog Lineages</h1>
+  <div id="status" role="status" aria-live="polite"></div>
+  <div id="network" aria-label="Interactive dog family tree"></div>
+
+  <script>
+    "use strict";
+
+    document.addEventListener("DOMContentLoaded", () => {
+      const dogs = [
+        // Family A
+        {
+          id: "1",
+          name: "Max",
+          sex: "M",
+          sireId: null,
+          damId: null
+        },
+        {
+          id: "2",
+          name: "Bella",
+          sex: "F",
+          sireId: null,
+          damId: null
+        },
+        {
+          id: "3",
+          name: "Rocky",
+          sex: "M",
+          sireId: "1",
+          damId: "2"
+        },
+        {
+          id: "4",
+          name: "Luna",
+          sex: "F",
+          sireId: null,
+          damId: null
+        },
+        {
+          id: "5",
+          name: "Chiquis",
+          sex: "F",
+          sireId: "3",
+          damId: "4"
+        },
+
+        // Family B
+        {
+          id: "6",
+          name: "Buster",
+          sex: "M",
+          sireId: null,
+          damId: null
+        },
+        {
+          id: "7",
+          name: "Daisy",
+          sex: "F",
+          sireId: null,
+          damId: null
+        },
+        {
+          id: "8",
+          name: "Coco",
+          sex: "F",
+          sireId: "6",
+          damId: "7"
+        },
+
+        // Standalone
+        {
+          id: "9",
+          name: "Milo",
+          sex: "M",
+          sireId: null,
+          damId: null
+        }
+      ];
+
+      const statusElement = document.getElementById("status");
+      const container = document.getElementById("network");
+
+      try {
+        const graph = buildPedigreeGraph(dogs);
+
+        const network = new vis.Network(
+          container,
+          {
+            nodes: new vis.DataSet(graph.nodes),
+            edges: new vis.DataSet(graph.edges)
+          },
+          createNetworkOptions()
+        );
+
+        network.once("afterDrawing", () => {
+          network.fit({
+            animation: {
+              duration: 400,
+              easingFunction: "easeInOutQuad"
+            }
+          });
+        });
+
+        const familyCount = getConnectedFamilies(dogs).length;
+
+        statusElement.textContent =
+          `${dogs.length} dogs across ${familyCount} separate family group(s).`;
+
+        console.log("Family groups:", getConnectedFamilies(dogs));
+      } catch (error) {
+        console.error(error);
+
+        statusElement.classList.add("error");
+        statusElement.textContent =
+          error instanceof Error
+            ? error.message
+            : "Unable to render the family tree.";
+      }
+    });
+
+    function buildPedigreeGraph(dogs) {
+      const dogMap = validateDogs(dogs);
+      const dogLevels = calculateDogLevels(dogs, dogMap);
+
+      const nodes = dogs.map((dog) => ({
+        id: dog.id,
+        label: `${dog.name}\n${dog.sex === "M" ? "Male" : "Female"}`,
+        level: dogLevels.get(dog.id) * 2,
+        shape: "box",
+        margin: {
+          top: 10,
+          right: 14,
+          bottom: 10,
+          left: 14
+        },
+        color: getDogColor(dog.sex),
+        font: {
+          color: "#ffffff",
+          face: "system-ui",
+          size: 15,
+          multi: false
+        },
+        borderWidth: 1,
+        borderWidthSelected: 2,
+        shadow: {
+          enabled: true,
+          color: "rgba(0, 0, 0, 0.25)",
+          size: 8,
+          x: 0,
+          y: 3
+        },
+        title: createDogTooltip(dog, dogMap)
+      }));
+
+      const edges = [];
+
+      /*
+       * Group children by their exact parent combination. This allows
+       * siblings to share one parental-union node.
+       */
+      const unions = new Map();
+
+      for (const dog of dogs) {
+        const parentIds = [dog.sireId, dog.damId].filter(Boolean);
+
+        if (parentIds.length === 0) {
+          continue;
+        }
+
+        const unionKey = createUnionKey(dog.sireId, dog.damId);
+
+        if (!unions.has(unionKey)) {
+          unions.set(unionKey, {
+            id: `union:${unionKey}`,
+            sireId: dog.sireId,
+            damId: dog.damId,
+            children: []
+          });
+        }
+
+        unions.get(unionKey).children.push(dog.id);
+      }
+
+      for (const union of unions.values()) {
+        const childLevels = union.children.map(
+          (childId) => dogLevels.get(childId)
+        );
+
+        const unionGeneration = Math.min(...childLevels);
+
+        nodes.push({
+          id: union.id,
+          level: unionGeneration * 2 - 1,
+          shape: "dot",
+          size: 6,
+          label: "",
+          color: {
+            background: "#94a3b8",
+            border: "#cbd5e1",
+            highlight: {
+              background: "#f8fafc",
+              border: "#ffffff"
+            },
+            hover: {
+              background: "#cbd5e1",
+              border: "#ffffff"
+            }
+          },
+          borderWidth: 1,
+          chosen: false
+        });
+
+        if (union.sireId) {
+          edges.push({
+            id: `${union.sireId}->${union.id}`,
+            from: union.sireId,
+            to: union.id,
+            relation: "sire",
+            arrows: ""
+          });
+        }
+
+        if (union.damId) {
+          edges.push({
+            id: `${union.damId}->${union.id}`,
+            from: union.damId,
+            to: union.id,
+            relation: "dam",
+            arrows: ""
+          });
+        }
+
+        for (const childId of union.children) {
+          edges.push({
+            id: `${union.id}->${childId}`,
+            from: union.id,
+            to: childId,
+            relation: "child",
+            arrows: {
+              to: {
+                enabled: true,
+                scaleFactor: 0.55
+              }
+            }
+          });
+        }
+      }
+
+      return { nodes, edges };
+    }
+
+    function validateDogs(dogs) {
+      if (!Array.isArray(dogs)) {
+        throw new TypeError("Dog data must be an array.");
+      }
+
+      const dogMap = new Map();
+
+      for (const dog of dogs) {
+        if (!dog || typeof dog !== "object") {
+          throw new TypeError("Every dog entry must be an object.");
+        }
+
+        if (typeof dog.id !== "string" || dog.id.trim() === "") {
+          throw new Error("Every dog must have a non-empty string ID.");
+        }
+
+        if (dogMap.has(dog.id)) {
+          throw new Error(`Duplicate dog ID: ${dog.id}`);
+        }
+
+        if (typeof dog.name !== "string" || dog.name.trim() === "") {
+          throw new Error(`Dog ${dog.id} must have a name.`);
+        }
+
+        if (!["M", "F"].includes(dog.sex)) {
+          throw new Error(
+            `Dog ${dog.id} has invalid sex "${dog.sex}". Expected M or F.`
+          );
+        }
+
+        dogMap.set(dog.id, dog);
+      }
+
+      for (const dog of dogs) {
+        validateParentReference(dog, "sireId", dogMap);
+        validateParentReference(dog, "damId", dogMap);
+
+        if (
+          dog.sireId &&
+          dog.damId &&
+          dog.sireId === dog.damId
+        ) {
+          throw new Error(
+            `Dog ${dog.id} cannot have the same dog as both sire and dam.`
+          );
+        }
+
+        if (dog.sireId && dogMap.get(dog.sireId).sex !== "M") {
+          console.warn(
+            `Dog ${dog.id}'s sire ${dog.sireId} is not marked male.`
+          );
+        }
+
+        if (dog.damId && dogMap.get(dog.damId).sex !== "F") {
+          console.warn(
+            `Dog ${dog.id}'s dam ${dog.damId} is not marked female.`
+          );
+        }
+      }
+
+      detectAncestryCycles(dogs, dogMap);
+
+      return dogMap;
+    }
+
+    function validateParentReference(dog, property, dogMap) {
+      const parentId = dog[property];
+
+      if (parentId == null) {
+        return;
+      }
+
+      if (typeof parentId !== "string") {
+        throw new Error(
+          `${property} for dog ${dog.id} must be a string or null.`
+        );
+      }
+
+      if (parentId === dog.id) {
+        throw new Error(`Dog ${dog.id} cannot be its own parent.`);
+      }
+
+      if (!dogMap.has(parentId)) {
+        throw new Error(
+          `Dog ${dog.id} references missing ${property}: ${parentId}`
+        );
+      }
+    }
+
+    function detectAncestryCycles(dogs, dogMap) {
+      const visiting = new Set();
+      const visited = new Set();
+
+      function visit(dogId, path) {
+        if (visiting.has(dogId)) {
+          throw new Error(
+            `Ancestry cycle detected: ${[...path, dogId].join(" -> ")}`
+          );
+        }
+
+        if (visited.has(dogId)) {
+          return;
+        }
+
+        visiting.add(dogId);
+
+        const dog = dogMap.get(dogId);
+        const parents = [dog.sireId, dog.damId].filter(Boolean);
+
+        for (const parentId of parents) {
+          visit(parentId, [...path, dogId]);
+        }
+
+        visiting.delete(dogId);
+        visited.add(dogId);
+      }
+
+      for (const dog of dogs) {
+        visit(dog.id, []);
+      }
+    }
+
+    function calculateDogLevels(dogs, dogMap) {
+      const memo = new Map();
+      const calculating = new Set();
+
+      function getLevel(dogId) {
+        if (memo.has(dogId)) {
+          return memo.get(dogId);
+        }
+
+        if (calculating.has(dogId)) {
+          throw new Error(`Cycle found while calculating ${dogId}'s level.`);
+        }
+
+        calculating.add(dogId);
+
+        const dog = dogMap.get(dogId);
+        const parents = [dog.sireId, dog.damId].filter(Boolean);
+
+        let level = 0;
+
+        if (parents.length > 0) {
+          level =
+            Math.max(...parents.map((parentId) => getLevel(parentId))) + 1;
+        }
+
+        calculating.delete(dogId);
+        memo.set(dogId, level);
+
+        return level;
+      }
+
+      for (const dog of dogs) {
+        getLevel(dog.id);
+      }
+
+      return memo;
+    }
+
+    function createUnionKey(sireId, damId) {
+      /*
+       * Labels preserve sire/dam roles and avoid collisions between
+       * combinations such as ["1", "23"] and ["12", "3"].
+       */
+      return JSON.stringify({
+        sireId: sireId ?? null,
+        damId: damId ?? null
+      });
+    }
+
+    function createDogTooltip(dog, dogMap) {
+      const sire = dog.sireId ? dogMap.get(dog.sireId)?.name : "Unknown";
+      const dam = dog.damId ? dogMap.get(dog.damId)?.name : "Unknown";
+
+      return [
+        dog.name,
+        `Sex: ${dog.sex === "M" ? "Male" : "Female"}`,
+        `Sire: ${sire}`,
+        `Dam: ${dam}`
+      ].join("\n");
+    }
+
+    function getDogColor(sex) {
+      if (sex === "M") {
+        return {
+          background: "#1e40af",
+          border: "#60a5fa",
+          highlight: {
+            background: "#2563eb",
+            border: "#f8fafc"
+          },
+          hover: {
+            background: "#1d4ed8",
+            border: "#bfdbfe"
+          }
+        };
+      }
+
+      return {
+        background: "#be185d",
+        border: "#f472b6",
+        highlight: {
+          background: "#db2777",
+          border: "#f8fafc"
+        },
+        hover: {
+          background: "#be185d",
+          border: "#fbcfe8"
+        }
+      };
+    }
+
+    function createNetworkOptions() {
+      return {
+        autoResize: true,
+
+        layout: {
+          hierarchical: {
+            enabled: true,
+            direction: "UD",
+            sortMethod: "directed",
+            shakeTowards: "roots",
+            nodeSpacing: 150,
+            levelSeparation: 100,
+            treeSpacing: 220,
+            blockShifting: true,
+            edgeMinimization: true,
+            parentCentralization: true
+          }
+        },
+
+        physics: false,
+
+        interaction: {
+          hover: true,
+          navigationButtons: true,
+          keyboard: {
+            enabled: true,
+            bindToWindow: false
+          },
+          tooltipDelay: 150
+        },
+
+        nodes: {
+          widthConstraint: {
+            minimum: 110,
+            maximum: 180
+          },
+          chosen: true
+        },
+
+        edges: {
+          width: 1.5,
+          color: {
+            color: "#94a3b8",
+            highlight: "#f8fafc",
+            hover: "#cbd5e1",
+            inherit: false
+          },
+          selectionWidth: 2,
+          hoverWidth: 2,
+          smooth: {
+            enabled: true,
+            type: "cubicBezier",
+            forceDirection: "vertical",
+            roundness: 0.35
+          }
+        }
+      };
+    }
+
+    function getConnectedFamilies(dogs) {
+      const dogMap = new Map(dogs.map((dog) => [dog.id, dog]));
+      const adjacency = new Map(
+        dogs.map((dog) => [dog.id, new Set()])
+      );
+
+      function connect(firstId, secondId) {
+        if (!dogMap.has(firstId) || !dogMap.has(secondId)) {
+          return;
+        }
+
+        adjacency.get(firstId).add(secondId);
+        adjacency.get(secondId).add(firstId);
+      }
+
+      for (const dog of dogs) {
+        if (dog.sireId) {
+          connect(dog.id, dog.sireId);
+        }
+
+        if (dog.damId) {
+          connect(dog.id, dog.damId);
+        }
+      }
+
+      const visited = new Set();
+      const families = [];
+
+      for (const dog of dogs) {
+        if (visited.has(dog.id)) {
+          continue;
+        }
+
+        const family = [];
+        const queue = [dog.id];
+        let queueIndex = 0;
+
+        visited.add(dog.id);
+
+        while (queueIndex < queue.length) {
+          const currentId = queue[queueIndex++];
+          family.push(dogMap.get(currentId));
+
+          for (const neighborId of adjacency.get(currentId)) {
+            if (!visited.has(neighborId)) {
+              visited.add(neighborId);
+              queue.push(neighborId);
+            }
+          }
+        }
+
+        families.push(family);
+      }
+
+      return families;
+    }
+  </script>
+</body>
+</html>

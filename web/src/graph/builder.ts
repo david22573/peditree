@@ -3,7 +3,7 @@ import { calculateGenerations } from './algorithms';
 
 /**
  * Pure function to transform normalized dog and parentage records into Vis Network nodes and edges.
- * Derived graph model only - never persisted.
+ * Inspired by root index.html pedigree layout and styling.
  */
 export function buildPedigreeGraph(
   dogs: readonly Dog[],
@@ -16,53 +16,71 @@ export function buildPedigreeGraph(
   const dogMap = new Map(activeDogs.map(d => [d.id, d]));
   const levelMap = calculateGenerations(activeDogs, relationships);
 
+  // Helper to retrieve sire/dam names for tooltips
+  const getParentName = (childId: string, role: 'SIRE' | 'DAM'): string => {
+    const rel = relationships.find(r => r.child_id === childId && r.role === role);
+    if (!rel) return 'Unknown';
+    const parent = dogMap.get(rel.parent_id);
+    return parent ? parent.name : 'Unknown';
+  };
+
   // 1. Generate Dog Nodes
   for (const dog of activeDogs) {
-    const level = levelMap.get(dog.id) ?? 0;
-    let bgColor = '#4A5568'; // Default dark grey
-    let borderColor = '#A0AEC0';
-    let shape = 'box';
+    const rawGen = levelMap.get(dog.id) ?? 0;
+    const nodeLevel = rawGen * 2; // Even levels for dog nodes (0, 2, 4...)
 
-    if (dog.sex === 'M') {
-      bgColor = '#2B6CB0'; // Blue for Male
-      borderColor = '#63B3ED';
-      shape = 'box';
-    } else if (dog.sex === 'F') {
-      bgColor = '#B83280'; // Pink/Magenta for Female
-      borderColor = '#F687B3';
-      shape = 'ellipse';
-    } else {
-      bgColor = '#742A2A'; // Dark Amber/Red for Unknown
-      borderColor = '#F6AD55';
-      shape = 'diamond';
-    }
+    const colorScheme = getDogColorScheme(dog.sex);
 
     const regLabel = dog.registration_number ? `\n[${dog.registration_number}]` : '';
-    const label = `${dog.name}${regLabel}`;
-    const tooltip = `<b>${escapeHTML(dog.name)}</b><br/>
-      Sex: ${dog.sex}<br/>
-      Breed: ${escapeHTML(dog.breed || 'N/A')}<br/>
-      Reg #: ${escapeHTML(dog.registration_number || 'N/A')}<br/>
-      Birth: ${escapeHTML(dog.birth_date || 'N/A')}`;
+    const sexLabel = dog.sex === 'M' ? 'Male' : dog.sex === 'F' ? 'Female' : 'Unknown';
+    const label = `${dog.name}\n${sexLabel}${regLabel}`;
+
+    const sireName = getParentName(dog.id, 'SIRE');
+    const damName = getParentName(dog.id, 'DAM');
+
+    const tooltip = [
+      `<b>${escapeHTML(dog.name)}</b>`,
+      `Sex: ${escapeHTML(sexLabel)}`,
+      `Breed: ${escapeHTML(dog.breed || 'N/A')}`,
+      `Reg #: ${escapeHTML(dog.registration_number || 'N/A')}`,
+      `Microchip: ${escapeHTML(dog.microchip_number || 'N/A')}`,
+      `Birth: ${escapeHTML(dog.birth_date || 'N/A')}`,
+      `Sire: ${escapeHTML(sireName)}`,
+      `Dam: ${escapeHTML(damName)}`,
+    ].join('<br/>');
 
     nodes.push({
       id: dog.id,
       label,
-      shape,
-      level,
+      shape: 'box',
+      level: nodeLevel,
       dogId: dog.id,
       title: tooltip,
-      color: {
-        background: bgColor,
-        border: borderColor,
-        highlight: { background: '#D69E2E', border: '#ECC94B' },
+      margin: {
+        top: 10,
+        right: 14,
+        bottom: 10,
+        left: 14,
       },
-      font: { color: '#FFFFFF', size: 14 },
+      color: colorScheme,
+      font: {
+        color: '#ffffff',
+        face: 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+        size: 14,
+      },
+      borderWidth: 1,
+      borderWidthSelected: 2,
+      shadow: {
+        enabled: true,
+        color: 'rgba(0, 0, 0, 0.25)',
+        size: 8,
+        x: 0,
+        y: 3,
+      },
     });
   }
 
   // 2. Group parent combinations into parental union nodes
-  // Map childId -> { sireId?: string, damId?: string, otherRels: Parentage[] }
   type ParentPair = {
     sireId?: string;
     damId?: string;
@@ -89,7 +107,6 @@ export function buildPedigreeGraph(
     childPairMap.set(rel.child_id, pair);
   }
 
-  // Map unionKey -> { unionNodeId, sireId, damId, children: string[], sireRel, damRel }
   type UnionGroup = {
     unionId: string;
     sireId?: string;
@@ -122,7 +139,7 @@ export function buildPedigreeGraph(
       group.children.push(childId);
     }
 
-    // Handle extra non-sire/dam or multiple parentage relationships as direct edges
+    // Direct edges for extra / custom non-sire/dam relationships
     for (const otherRel of pair.others) {
       const isUncertain = otherRel.confidence !== 'CONFIRMED' || otherRel.relationship_type !== 'BIOLOGICAL';
       edges.push({
@@ -130,76 +147,155 @@ export function buildPedigreeGraph(
         from: otherRel.parent_id,
         to: otherRel.child_id,
         dashes: isUncertain,
-        color: { color: isUncertain ? '#ED8936' : '#A0AEC0' },
-        arrows: 'to',
+        color: {
+          color: isUncertain ? '#f59e0b' : '#94a3b8',
+          highlight: '#f8fafc',
+          hover: '#cbd5e1',
+        },
+        arrows: {
+          to: {
+            enabled: true,
+            scaleFactor: 0.55,
+          },
+        },
         label: `${otherRel.role} (${otherRel.relationship_type})`,
       });
     }
   }
 
-  // 3. Create Union Nodes and connect parents -> union -> children
+  // 3. Create Union Nodes (odd levels 1, 3, 5...) and connect parents -> union -> children
   for (const group of unionGroups.values()) {
-    let maxParentLevel = 0;
-    if (group.sireId && levelMap.has(group.sireId)) {
-      maxParentLevel = Math.max(maxParentLevel, levelMap.get(group.sireId)!);
-    }
-    if (group.damId && levelMap.has(group.damId)) {
-      maxParentLevel = Math.max(maxParentLevel, levelMap.get(group.damId)!);
-    }
-    const unionLevel = maxParentLevel + 0.5;
+    const childLevels = group.children.map(cId => levelMap.get(cId) ?? 0);
+    const minChildGen = Math.min(...childLevels);
+    const unionLevel = minChildGen * 2 - 1; // Odd level between parents and children
 
-    // Add union dot node
     nodes.push({
       id: group.unionId,
-      label: '•',
+      level: Math.max(1, unionLevel),
       shape: 'dot',
-      level: unionLevel,
+      size: 6,
+      label: '',
       isUnionNode: true,
       color: {
-        background: '#CBD5E0',
-        border: '#4A5568',
+        background: '#94a3b8',
+        border: '#cbd5e1',
+        highlight: {
+          background: '#f8fafc',
+          border: '#ffffff',
+        },
+        hover: {
+          background: '#cbd5e1',
+          border: '#ffffff',
+        },
       },
+      borderWidth: 1,
+      chosen: false,
     });
 
-    // Sire -> Union Edge
+    // Sire -> Union Edge (line running down into union node)
     if (group.sireId) {
       const isUncertain = group.sireRel && (group.sireRel.confidence !== 'CONFIRMED' || group.sireRel.relationship_type !== 'BIOLOGICAL');
       edges.push({
         id: `edge:${group.unionId}_sire`,
         from: group.sireId,
         to: group.unionId,
+        relation: 'sire',
         dashes: isUncertain,
-        color: { color: isUncertain ? '#ED8936' : '#63B3ED' },
-        arrows: 'to',
+        color: {
+          color: isUncertain ? '#f59e0b' : '#94a3b8',
+          highlight: '#f8fafc',
+          hover: '#cbd5e1',
+        },
+        arrows: '',
       });
     }
 
-    // Dam -> Union Edge
+    // Dam -> Union Edge (line running down into union node)
     if (group.damId) {
       const isUncertain = group.damRel && (group.damRel.confidence !== 'CONFIRMED' || group.damRel.relationship_type !== 'BIOLOGICAL');
       edges.push({
         id: `edge:${group.unionId}_dam`,
         from: group.damId,
         to: group.unionId,
+        relation: 'dam',
         dashes: isUncertain,
-        color: { color: isUncertain ? '#ED8936' : '#F687B3' },
-        arrows: 'to',
+        color: {
+          color: isUncertain ? '#f59e0b' : '#94a3b8',
+          highlight: '#f8fafc',
+          hover: '#cbd5e1',
+        },
+        arrows: '',
       });
     }
 
-    // Union -> Children Edges
+    // Union -> Children Edges (arrow pointing to child)
     for (const childId of group.children) {
       edges.push({
         id: `edge:${group.unionId}_child_${childId}`,
         from: group.unionId,
         to: childId,
-        color: { color: '#CBD5E0' },
-        arrows: 'to',
+        relation: 'child',
+        color: {
+          color: '#94a3b8',
+          highlight: '#f8fafc',
+          hover: '#cbd5e1',
+        },
+        arrows: {
+          to: {
+            enabled: true,
+            scaleFactor: 0.55,
+          },
+        },
       });
     }
   }
 
   return { nodes, edges };
+}
+
+function getDogColorScheme(sex: string) {
+  if (sex === 'M') {
+    return {
+      background: '#1e40af',
+      border: '#60a5fa',
+      highlight: {
+        background: '#2563eb',
+        border: '#f8fafc',
+      },
+      hover: {
+        background: '#1d4ed8',
+        border: '#bfdbfe',
+      },
+    };
+  }
+
+  if (sex === 'F') {
+    return {
+      background: '#be185d',
+      border: '#f472b6',
+      highlight: {
+        background: '#db2777',
+        border: '#f8fafc',
+      },
+      hover: {
+        background: '#be185d',
+        border: '#fbcfe8',
+      },
+    };
+  }
+
+  return {
+    background: '#742a2a',
+    border: '#f6ad55',
+    highlight: {
+      background: '#9b2c2c',
+      border: '#f8fafc',
+    },
+    hover: {
+      background: '#742a2a',
+      border: '#feebc8',
+    },
+  };
 }
 
 function escapeHTML(str: string): string {
